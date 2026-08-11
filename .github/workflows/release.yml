@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Blackout.app
+        run: ./build.sh
+
+      - name: Zip app
+        run: ditto -c -k --keepParent dist/Blackout.app Blackout.zip
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" Blackout.zip \
+            --title "Blackout $GITHUB_REF_NAME" \
+            --notes "Download \`Blackout.zip\`, unzip, move \`Blackout.app\` to /Applications, then clear the quarantine flag (the app is not notarized):
+
+          \`\`\`sh
+          xattr -dr com.apple.quarantine /Applications/Blackout.app
+          open /Applications/Blackout.app
+          \`\`\`
+
+          Requires macOS 13+ on Apple Silicon."

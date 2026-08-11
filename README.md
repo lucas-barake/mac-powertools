@@ -6,6 +6,19 @@ When you work on an external display with the lid open (for the camera, the keyb
 
 This is a real disconnect, not brightness 0, not gamma tricks, not mirroring. While disabled, the built-in display disappears from the online display list and from System Settings.
 
+## Install
+
+Grab `Blackout.zip` from the [latest release](https://github.com/lucas-barake/blackout/releases/latest), unzip it, and move `Blackout.app` to `/Applications`.
+
+The app is ad-hoc signed, not notarized, so macOS quarantines the download. Clear the flag once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Blackout.app
+open /Applications/Blackout.app
+```
+
+Alternatively, allow it under System Settings → Privacy & Security → Open Anyway after the first blocked launch.
+
 ## Usage
 
 Click the display icon in the menu bar:
