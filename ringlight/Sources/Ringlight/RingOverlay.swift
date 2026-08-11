@@ -4,11 +4,14 @@ final class RingView: NSView {
     var color: NSColor = Warmth.soft.color { didSet { needsDisplay = true } }
     var thickness: CGFloat = 80 { didSet { needsDisplay = true } }
 
+    static let gap: CGFloat = 32
+
     override func draw(_ dirtyRect: NSRect) {
         color.setFill()
-        let outer = NSBezierPath(rect: bounds)
+        let outerRect = bounds.insetBy(dx: Self.gap, dy: Self.gap)
+        let outer = NSBezierPath(roundedRect: outerRect, xRadius: 24, yRadius: 24)
         let inner = NSBezierPath(
-            roundedRect: bounds.insetBy(dx: thickness, dy: thickness),
+            roundedRect: outerRect.insetBy(dx: thickness, dy: thickness),
             xRadius: thickness / 2,
             yRadius: thickness / 2
         )
@@ -21,12 +24,14 @@ final class RingWindow: NSWindow {
     private let ringView = RingView()
 
     init(screen: NSScreen) {
-        super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        // visibleFrame + .floating keep the menu bar, menus, and Dock above the
+        // ring so system UI is never covered.
+        super.init(contentRect: screen.visibleFrame, styleMask: .borderless, backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
         ignoresMouseEvents = true
-        level = .screenSaver
+        level = .floating
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         // The ring must never steal focus or appear in Mission Control/Exposé.
         isExcludedFromWindowsMenu = true
@@ -34,16 +39,19 @@ final class RingWindow: NSWindow {
         apply()
     }
 
+    private var dimmed = false
+
     func apply() {
         ringView.color = Settings.warmth.color
         ringView.thickness = CGFloat(Settings.thickness.rawValue)
-        alphaValue = Settings.intensity.alpha
+        alphaValue = dimmed ? Settings.intensity * 0.35 : Settings.intensity
     }
 
     // Dim and add transparency while the cursor is near the band so the ring
     // never hides content or UI the user is aiming for.
     func setDimmed(_ dimmed: Bool) {
-        let target = dimmed ? Settings.intensity.alpha * 0.35 : Settings.intensity.alpha
+        self.dimmed = dimmed
+        let target = dimmed ? Settings.intensity * 0.35 : Settings.intensity
         guard abs(alphaValue - target) > 0.01 else { return }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
@@ -53,13 +61,12 @@ final class RingWindow: NSWindow {
 
     // The band area plus a margin, in global screen coordinates.
     func hoverZoneContains(_ point: NSPoint) -> Bool {
-        guard let screen else { return false }
         let margin: CGFloat = 24
-        let inner = screen.frame.insetBy(
+        let inner = frame.insetBy(
             dx: CGFloat(Settings.thickness.rawValue) + margin,
             dy: CGFloat(Settings.thickness.rawValue) + margin
         )
-        return screen.frame.contains(point) && !inner.contains(point)
+        return frame.contains(point) && !inner.contains(point)
     }
 }
 

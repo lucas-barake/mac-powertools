@@ -2,7 +2,7 @@
 
 A macOS menu bar app that turns your screen edges into a ring light for your webcam.
 
-It draws a bright, warm-tinted band around the border of your screen, above everything including fullscreen apps. The band is click-through, and when your cursor gets near the edge it dims and turns translucent so it never hides what you are aiming for. Move away and it comes back to full brightness.
+It draws a bright, warm-tinted band floating around the working area of your screen, with the menu bar, menus, and Dock always visible above it. The band is click-through, and when your cursor gets near the edge it dims and turns translucent so it never hides what you are aiming for. Move away and it comes back to full brightness.
 
 ## Install
 
@@ -21,7 +21,7 @@ Click the ring icon in the menu bar:
 - **Screen** picks which screen gets the ring (or all of them).
 - **Thickness** — Thin / Medium / Thick.
 - **Warmth** — Cool / Soft / Warm color temperature.
-- **Intensity** — Low / Medium / Full brightness.
+- **Intensity** — a slider from 15% to 100% brightness.
 - **Launch at Login** registers the app with `SMAppService`.
 
 Settings persist across launches.

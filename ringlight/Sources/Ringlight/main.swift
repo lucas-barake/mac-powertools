@@ -9,7 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let screensMenu = NSMenu()
     private let thicknessMenu = NSMenu()
     private let warmthMenu = NSMenu()
-    private let intensityMenu = NSMenu()
+    private let intensitySlider = NSSlider(value: 1, minValue: 0.15, maxValue: 1, target: nil, action: nil)
     private let launchAtLoginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -22,7 +22,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(submenu("Screen", screensMenu))
         menu.addItem(submenu("Thickness", thicknessMenu))
         menu.addItem(submenu("Warmth", warmthMenu))
-        menu.addItem(submenu("Intensity", intensityMenu))
+
+        let intensityLabel = NSMenuItem(title: "Intensity", action: nil, keyEquivalent: "")
+        intensityLabel.isEnabled = false
+        menu.addItem(intensityLabel)
+        intensitySlider.target = self
+        intensitySlider.action = #selector(intensityChanged)
+        intensitySlider.isContinuous = true
+        let sliderContainer = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 28))
+        intensitySlider.frame = NSRect(x: 14, y: 4, width: 192, height: 20)
+        sliderContainer.addSubview(intensitySlider)
+        let sliderItem = NSMenuItem()
+        sliderItem.view = sliderContainer
+        menu.addItem(sliderItem)
         menu.addItem(.separator())
         launchAtLoginItem.target = self
         menu.addItem(launchAtLoginItem)
@@ -45,13 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.representedObject = warmth.rawValue
             warmthMenu.addItem(item)
         }
-        for intensity in Intensity.allCases {
-            let item = NSMenuItem(title: intensity.title, action: #selector(pickIntensity(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = intensity.rawValue
-            intensityMenu.addItem(item)
-        }
-
         if Settings.enabled {
             ring.rebuild()
         }
@@ -85,8 +90,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ring.applySettings()
     }
 
-    @objc private func pickIntensity(_ sender: NSMenuItem) {
-        Settings.intensity = Intensity(rawValue: sender.representedObject as! Int)!
+    @objc private func intensityChanged() {
+        Settings.intensity = CGFloat(intensitySlider.doubleValue)
         ring.applySettings()
     }
 
@@ -143,9 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for item in warmthMenu.items {
             item.state = (item.representedObject as? String) == Settings.warmth.rawValue ? .on : .off
         }
-        for item in intensityMenu.items {
-            item.state = (item.representedObject as? Int) == Settings.intensity.rawValue ? .on : .off
-        }
+        intensitySlider.doubleValue = Double(Settings.intensity)
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

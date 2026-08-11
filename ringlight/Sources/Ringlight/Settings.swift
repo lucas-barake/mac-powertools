@@ -36,22 +36,6 @@ enum Warmth: String, CaseIterable {
     }
 }
 
-enum Intensity: Int, CaseIterable {
-    case low = 60
-    case medium = 80
-    case full = 100
-
-    var title: String {
-        switch self {
-        case .low: return "Low"
-        case .medium: return "Medium"
-        case .full: return "Full"
-        }
-    }
-
-    var alpha: CGFloat { CGFloat(rawValue) / 100 }
-}
-
 struct Settings {
     private static let defaults = UserDefaults.standard
 
@@ -70,9 +54,13 @@ struct Settings {
         set { defaults.set(newValue.rawValue, forKey: "warmth") }
     }
 
-    static var intensity: Intensity {
-        get { Intensity(rawValue: defaults.integer(forKey: "intensity")) ?? .full }
-        set { defaults.set(newValue.rawValue, forKey: "intensity") }
+    // Ring opacity, 0.15...1. Stored as Double; 0 means "never set".
+    static var intensity: CGFloat {
+        get {
+            let stored = defaults.double(forKey: "intensity")
+            return stored == 0 ? 1 : CGFloat(min(max(stored, 0.15), 1))
+        }
+        set { defaults.set(Double(newValue), forKey: "intensity") }
     }
 
     // Empty means every screen. Screens are identified by localizedName, which
