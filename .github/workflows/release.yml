@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "blackout-v*"
+      - "ringlight-v*"
 
 permissions:
   contents: write
@@ -14,23 +15,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Blackout.app
-        run: ./build.sh
-
-      - name: Zip app
-        run: ditto -c -k --keepParent dist/Blackout.app Blackout.zip
+      - name: Build app
+        id: build
+        run: |
+          APP="${GITHUB_REF_NAME%-v*}"
+          VERSION="v${GITHUB_REF_NAME#*-v}"
+          NAME="$(tr '[:lower:]' '[:upper:]' <<< "${APP:0:1}")${APP:1}"
+          ./"$APP"/build.sh
+          ditto -c -k --keepParent "$APP/dist/$NAME.app" "$NAME.zip"
+          {
+            echo "app=$APP"
+            echo "name=$NAME"
+            echo "version=$VERSION"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" Blackout.zip \
-            --title "Blackout $GITHUB_REF_NAME" \
-            --notes "Download \`Blackout.zip\`, unzip, move \`Blackout.app\` to /Applications, then clear the quarantine flag (the app is not notarized):
+          NAME="${{ steps.build.outputs.name }}"
+          gh release create "$GITHUB_REF_NAME" "$NAME.zip" \
+            --title "$NAME ${{ steps.build.outputs.version }}" \
+            --notes "Download \`$NAME.zip\`, unzip, move \`$NAME.app\` to /Applications, then clear the quarantine flag (the app is not notarized):
 
           \`\`\`sh
-          xattr -dr com.apple.quarantine /Applications/Blackout.app
-          open /Applications/Blackout.app
+          xattr -dr com.apple.quarantine /Applications/$NAME.app
+          open /Applications/$NAME.app
           \`\`\`
 
-          Requires macOS 13+ on Apple Silicon."
+          Requires macOS 13+."

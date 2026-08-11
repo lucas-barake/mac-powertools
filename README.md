@@ -1,51 +1,27 @@
-# Blackout
+# mac-powertools
 
-A macOS menu bar app that truly disconnects the built-in MacBook display while the lid stays open.
+Small, focused macOS menu bar utilities. Each app lives in its own directory, builds with a single script, and ships as a zip on the [releases page](https://github.com/lucas-barake/mac-powertools/releases).
 
-When you work on an external display with the lid open (for the camera, the keyboard, or Touch ID), macOS still treats the built-in panel as a screen. Windows land on it, window managers tile onto it, and moving the mouse wakes it. Blackout removes the panel from the display topology entirely, as if it were not there. The camera, keyboard, trackpad, and Touch ID keep working.
-
-This is a real disconnect, not brightness 0, not gamma tricks, not mirroring. While disabled, the built-in display disappears from the online display list and from System Settings.
+| App | What it does |
+| --- | --- |
+| [Blackout](blackout/) | Truly disconnects the built-in MacBook display while the lid stays open, so macOS stops treating it as a screen. Camera and keyboard keep working, the mouse cannot wake it. |
+| [Ringlight](ringlight/) | Draws a bright ring around your screen edges to light your face on webcam. Click-through, and it dims with transparency when your cursor gets near it. |
 
 ## Install
 
-Grab `Blackout.zip` from the [latest release](https://github.com/lucas-barake/blackout/releases/latest), unzip it, and move `Blackout.app` to `/Applications`.
-
-The app is ad-hoc signed, not notarized, so macOS quarantines the download. Clear the flag once:
+Download the app's zip from [releases](https://github.com/lucas-barake/mac-powertools/releases), unzip, move the `.app` to `/Applications`, and clear the quarantine flag once (the apps are ad-hoc signed, not notarized):
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Blackout.app
-open /Applications/Blackout.app
+xattr -dr com.apple.quarantine /Applications/<App>.app
 ```
 
-Alternatively, allow it under System Settings → Privacy & Security → Open Anyway after the first blocked launch.
-
-## Usage
-
-Click the display icon in the menu bar:
-
-- **Disable Built-in Display** disconnects the panel.
-- **Enable Built-in Display** brings it back.
-- **Launch at Login** registers the app with `SMAppService`.
-
-Safety rails:
-
-- Refuses to disable the built-in display when it is the only active display.
-- Automatically re-enables the built-in display if every external display disappears while it is off, so the machine is never headless.
-- Re-enables the display on quit.
-
-## Build
+## Build from source
 
 ```sh
-./build.sh
-open dist/Blackout.app
+./blackout/build.sh    # -> blackout/dist/Blackout.app
+./ringlight/build.sh   # -> ringlight/dist/Ringlight.app
 ```
 
-Requires macOS 13+ on Apple Silicon. No root, no entitlements, no TCC prompts.
+## Releases
 
-## How it works
-
-Blackout uses the private CoreGraphics symbol `CGSConfigureDisplayEnabled`, resolved at runtime with `dlsym`, inside a standard `CGBeginDisplayConfiguration` / `CGCompleteDisplayConfiguration(.permanently)` transaction. This is the same mechanism behind Lunar's BlackOut disconnect mode and BetterDisplay's "disconnect display".
-
-Because the symbol is private, an OS update could remove or break it. The app resolves it at launch and tells you if it is gone instead of failing silently.
-
-If a re-enable ever fails (reports exist on some Apple Silicon and macOS combinations), closing and reopening the lid or rebooting restores the panel. macOS always re-enables the built-in display on boot.
+Pushing a tag named `<app>-v<version>` (for example `blackout-v1.0.0`) builds that app on CI and publishes the zip as a GitHub release.
