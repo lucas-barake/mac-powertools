@@ -2,7 +2,21 @@ import CoreGraphics
 import Foundation
 
 final class DisplayManager {
-    private(set) var disabledBuiltinID: CGDirectDisplayID?
+    // Persisted so a crash or forced relaunch while the panel is off can still
+    // recover it: without this, losing the process while headless would leave
+    // the machine unusable until reboot.
+    private(set) var disabledBuiltinID: CGDirectDisplayID? {
+        didSet {
+            if let disabledBuiltinID {
+                UserDefaults.standard.set(Int(disabledBuiltinID), forKey: "disabledBuiltinID")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "disabledBuiltinID")
+            }
+            updateWatchdog()
+        }
+    }
+
+    private var watchdog: Timer?
 
     var onExternalTopologyChange: (() -> Void)?
 
@@ -17,6 +31,8 @@ final class DisplayManager {
             DispatchQueue.main.async { manager.onExternalTopologyChange?() }
         }
         CGDisplayRegisterReconfigurationCallback(callback, Unmanaged.passUnretained(self).toOpaque())
+
+        recoverPersistedState()
     }
 
     static func onlineDisplays() -> [CGDirectDisplayID] {
@@ -55,14 +71,47 @@ final class DisplayManager {
         disabledBuiltinID = nil
     }
 
-    // If every non-builtin display goes away while the builtin is disabled
-    // (external unplugged, dock sleep), bring the builtin back rather than leave
-    // the machine headless.
+    // If every other display goes away while the builtin is disabled (external
+    // unplugged, dock sleep), bring the builtin back rather than leave the
+    // machine headless.
     func reenableIfHeadless() {
         guard builtinIsDisabled else { return }
         let builtin = Self.builtinDisplay()
         let others = Self.activeDisplays().filter { $0 != builtin && $0 != disabledBuiltinID }
         guard others.isEmpty else { return }
+        // Failures stay disabled and the watchdog retries: a re-enable attempted
+        // while the WindowServer is mid-reconfiguration can fail transiently.
         try? enableBuiltin()
+    }
+
+    // The reconfiguration callback alone is not enough to guarantee recovery:
+    // if it is missed, delivered before the topology settles, or the re-enable
+    // call fails once, nothing would retry and the machine stays headless. The
+    // watchdog polls the (cheap) active display list the whole time the panel
+    // is off and stops as soon as it is back.
+    private func updateWatchdog() {
+        if builtinIsDisabled, watchdog == nil {
+            let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+                self?.reenableIfHeadless()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            watchdog = timer
+        } else if !builtinIsDisabled {
+            watchdog?.invalidate()
+            watchdog = nil
+        }
+    }
+
+    private func recoverPersistedState() {
+        guard let stored = UserDefaults.standard.object(forKey: "disabledBuiltinID") as? Int else { return }
+        let id = CGDirectDisplayID(stored)
+        if let builtin = Self.builtinDisplay(), Self.activeDisplays().contains(builtin) {
+            // The panel came back on its own (reboot re-enables it); drop the
+            // stale record.
+            UserDefaults.standard.removeObject(forKey: "disabledBuiltinID")
+        } else {
+            disabledBuiltinID = id
+            reenableIfHeadless()
+        }
     }
 }
