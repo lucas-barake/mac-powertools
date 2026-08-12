@@ -53,10 +53,21 @@ final class DisplayManager {
         onlineDisplays().first { CGDisplayIsBuiltin($0) != 0 }
     }
 
+    // Once no physical display is active, the WindowServer brings up a
+    // placeholder virtual display (vendor 'unkn', model 'virt', zero physical
+    // size). It must not count as a usable screen, or the headless check would
+    // never fire after the last external is unplugged.
+    static func isStubDisplay(_ id: CGDirectDisplayID) -> Bool {
+        CGDisplayVendorNumber(id) == 0x756E_6B6E && CGDisplayModelNumber(id) == 0x7669_7274
+    }
+
+    static func usableDisplays(besides excluded: [CGDirectDisplayID?]) -> [CGDirectDisplayID] {
+        activeDisplays().filter { !isStubDisplay($0) && !excluded.contains($0) }
+    }
+
     func disableBuiltin() throws {
         guard let builtin = Self.builtinDisplay() else { throw BlackoutError.noBuiltinDisplay }
-        let others = Self.activeDisplays().filter { $0 != builtin }
-        guard !others.isEmpty else { throw BlackoutError.builtinIsOnlyDisplay }
+        guard !Self.usableDisplays(besides: [builtin]).isEmpty else { throw BlackoutError.builtinIsOnlyDisplay }
         try PrivateAPI.setDisplayEnabled(builtin, false)
         disabledBuiltinID = builtin
     }
@@ -76,9 +87,7 @@ final class DisplayManager {
     // machine headless.
     func reenableIfHeadless() {
         guard builtinIsDisabled else { return }
-        let builtin = Self.builtinDisplay()
-        let others = Self.activeDisplays().filter { $0 != builtin && $0 != disabledBuiltinID }
-        guard others.isEmpty else { return }
+        guard Self.usableDisplays(besides: [Self.builtinDisplay(), disabledBuiltinID]).isEmpty else { return }
         // Failures stay disabled and the watchdog retries: a re-enable attempted
         // while the WindowServer is mid-reconfiguration can fail transiently.
         try? enableBuiltin()

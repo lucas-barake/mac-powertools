@@ -30,7 +30,7 @@ Click the display icon in the menu bar:
 Safety rails:
 
 - Refuses to disable the built-in display when it is the only active display.
-- Automatically re-enables the built-in display if every external display disappears while it is off, so the machine is never headless. This is enforced by a watchdog that polls every 2 seconds while the panel is off and retries failed re-enable attempts, not just by a one-shot display-change callback.
+- Automatically re-enables the built-in display if every external display disappears while it is off, so the machine is never headless. This is enforced by a watchdog that polls every 2 seconds while the panel is off and retries failed re-enable attempts, not just by a one-shot display-change callback. The check ignores the placeholder virtual display (vendor `unkn`, model `virt`) that the WindowServer brings up when no physical display is active, which would otherwise mask the headless state.
 - Remembers the disabled panel across crashes and relaunches: if the app dies while the panel is off, the next launch recovers the state and re-enables the display if no other screen is active.
 - Re-enables the display on quit.
 
