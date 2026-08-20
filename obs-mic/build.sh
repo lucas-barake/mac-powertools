@@ -17,6 +17,7 @@ clang -bundle -O2 \
     -DkPlugIn_BundleID='"dev.lucasbarake.obsmic"' \
     -DkManufacturer_Name='"OBS Mic Project"' \
     -DkNumber_Of_Channels=2 \
+    -DkEnableVolumeControl=false \
     -framework CoreAudio \
     -framework CoreFoundation \
     -framework Accelerate \
