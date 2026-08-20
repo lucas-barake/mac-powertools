@@ -60,6 +60,18 @@ The router runs as a LaunchAgent (`dev.lucasbarake.obsmic.router`), starts at lo
 waits for OBS, and rebuilds the route automatically when OBS restarts or coreaudiod is
 reset. Log: `~/Library/Logs/obsmic-router.log`.
 
+## Latency
+
+The tunnel itself (tap, aggregate, driver, consumer) measured 65 ms, stable, with a click
+train through QuickTime. Anything beyond that comes from OBS. Two things to check there:
+
+- OBS grows its internal audio buffer whenever a source delivers late (a sleep/wake, a USB
+  hiccup), never shrinks it, and caps at 1000 ms. The log line is `adding N milliseconds of
+  audio buffering`. Restarting OBS resets it. Setting `LowLatencyAudioBuffering=true` under
+  `[Audio]` in the profile's `basic.ini` (Settings → Audio → Advanced → Low latency audio
+  buffering mode) stops the growth.
+- Filters such as noise suppression add their own processing delay.
+
 ## Testing the tunnel without OBS
 
 `obsmic-router` takes an optional bundle identifier and routes that app instead of OBS.
