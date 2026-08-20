@@ -214,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
 
-        statusItem = NSStatusBar.system.statusItem(withLength: 30)
+        statusItem = NSStatusBar.system.statusItem(withLength: 44)
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self
 
@@ -249,7 +249,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let (rms, peak) = capture.levels()
-        statusItem.button?.image = menuBarImage(rms: rms, deviceOK: capture.isCapturing)
+        let dark = statusItem.button?.effectiveAppearance
+            .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        statusItem.button?.image = menuBarImage(
+            rms: rms, deviceOK: capture.isCapturing, dark: dark)
 
         if popover.isShown {
             popoverVC.meterView.rms = rms
@@ -290,11 +293,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? task.run()
     }
 
-    func menuBarImage(rms: Double, deviceOK: Bool) -> NSImage {
-        let size = NSSize(width: 26, height: 16)
+    func menuBarImage(rms: Double, deviceOK: Bool, dark: Bool) -> NSImage {
+        let size = NSSize(width: 40, height: 16)
+        let fore: NSColor = dark ? NSColor.white.withAlphaComponent(0.9)
+                                 : NSColor.black.withAlphaComponent(0.8)
         return NSImage(size: size, flipped: false) { _ in
-            let bar = NSRect(x: 1, y: 3, width: 24, height: 10)
-            NSColor.tertiaryLabelColor.setStroke()
+            if let mic = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "OBS Mic"),
+               let tinted = mic.withSymbolConfiguration(
+                   .init(pointSize: 11, weight: .semibold)
+                       .applying(.init(paletteColors: [fore]))) {
+                tinted.draw(in: NSRect(x: 0, y: 2, width: 11, height: 12))
+            }
+
+            let bar = NSRect(x: 14, y: 3, width: 25, height: 10)
+            // Visible track even at silence, so the icon never disappears
+            // into the menu bar.
+            fore.withAlphaComponent(0.25).setFill()
+            NSBezierPath(roundedRect: bar, xRadius: 3, yRadius: 3).fill()
+            fore.setStroke()
             let outline = NSBezierPath(roundedRect: bar, xRadius: 3, yRadius: 3)
             outline.lineWidth = 1
             outline.stroke()
@@ -304,7 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .font: NSFont.boldSystemFont(ofSize: 9),
                     .foregroundColor: NSColor.systemRed,
                 ]
-                ("!" as NSString).draw(at: NSPoint(x: 11, y: 3), withAttributes: attrs)
+                ("!" as NSString).draw(at: NSPoint(x: 24, y: 3), withAttributes: attrs)
                 return true
             }
 
