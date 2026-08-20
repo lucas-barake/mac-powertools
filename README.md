@@ -6,6 +6,7 @@ Small, focused macOS menu bar utilities. Each app lives in its own directory, bu
 | --- | --- |
 | [Blackout](blackout/) | Truly disconnects the built-in MacBook display while the lid stays open, so macOS stops treating it as a screen. Camera and keyboard keep working, the mouse cannot wake it. |
 | [Ringlight](ringlight/) | Draws a bright ring around your screen edges to light your face on webcam. Click-through, and it dims with transparency when your cursor gets near it. |
+| [obs-mic](obs-mic/) | Exposes OBS Studio's processed audio as a virtual microphone that any app can select. Installs a CoreAudio driver, a login daemon, and a menu bar level meter from source with `obs-mic/install.sh`. Not shipped as a zip. |
 
 ## Install
 
