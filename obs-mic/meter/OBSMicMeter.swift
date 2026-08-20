@@ -175,6 +175,22 @@ func streamCount(_ device: AudioObjectID, scope: AudioObjectPropertyScope) -> In
     return Int(size) / MemoryLayout<AudioObjectID>.size
 }
 
+func activeSubDevices(_ aggregate: AudioObjectID) -> [AudioObjectID] {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioAggregateDevicePropertyActiveSubDeviceList,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(aggregate, &addr, 0, nil, &size) == noErr, size > 0
+    else { return [] }
+    var ids = [AudioObjectID](
+        repeating: AudioObjectID(kAudioObjectUnknown),
+        count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(aggregate, &addr, 0, nil, &size, &ids) == noErr
+    else { return [] }
+    return ids
+}
+
 // Plays what the OBS Mic device delivers to its consumers on the current default
 // output device: one private aggregate with the output device as clock master and
 // the virtual device drift-compensated against it, and a copy in the IO callback.
@@ -219,6 +235,15 @@ final class Loopback {
         var err = AudioHardwareCreateAggregateDevice(desc as CFDictionary, &agg)
         guard err == noErr else {
             status = "aggregate failed (\(err))"
+            return
+        }
+        // The HAL builds the aggregate out of whichever sub-device UIDs it can
+        // resolve and reports success either way, so a missing OBS Mic device
+        // would leave the physical device as sub-device 0: the copy below would
+        // then read that device's own input and play it back on its output.
+        guard activeSubDevices(agg).first == virtualDevice else {
+            AudioHardwareDestroyAggregateDevice(agg)
+            status = "OBS Mic device unavailable"
             return
         }
         var proc: AudioDeviceIOProcID?
