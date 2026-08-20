@@ -308,6 +308,10 @@ static void HandleAppTerminated(pid_t pid) {
     if (!gState.running || gState.routedPID != pid) return;
     logmsg(@"%@ (pid %d) terminated, tearing down route", gTargetBundleID, pid);
     TearDown();
+    // A relaunch can be announced before the old instance's termination, in
+    // which case its launch was ignored because a route was still up.
+    NSRunningApplication *survivor = FindOBS();
+    if (survivor != nil) StartRouteChain(survivor.processIdentifier);
 }
 
 int main(int argc, const char *argv[]) {

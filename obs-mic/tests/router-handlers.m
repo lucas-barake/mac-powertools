@@ -12,6 +12,7 @@ static int gFailures = 0;
 
 int main(void) {
     @autoreleasepool {
+        gTargetBundleID = @"dev.lucasbarake.obsmic.tests.no-such-app";
         // A route is live for OBS instance pid 4242. The object ids stay unknown
         // so TearDown touches no real CoreAudio object.
         gState.tapID = kAudioObjectUnknown;
@@ -25,9 +26,27 @@ int main(void) {
         CHECK(gState.running == YES,
               "terminate of unrouted pid 1111 leaves the route for pid 4242 up");
 
+        unsigned generationBefore = gRouteGeneration;
         HandleAppTerminated(4242);
         CHECK(gState.running == NO,
               "terminate of the routed pid 4242 tears the route down");
+        CHECK(gRouteGeneration == generationBefore,
+              "no survivor means no new retry chain");
+
+        // Launch of a relaunched instance arriving before the old one's
+        // termination is ignored while the route is up, so teardown must
+        // re-arm for whatever instance is still running.
+        gState.routedPID = 4242;
+        gState.running = YES;
+        HandleAppLaunched(4343);
+        CHECK(gState.running == YES && gState.routedPID == 4242,
+              "launch while routed leaves the existing route alone");
+        gTargetBundleID = @"com.apple.finder";
+        generationBefore = gRouteGeneration;
+        HandleAppTerminated(4242);
+        CHECK(gState.running == NO && gRouteGeneration == generationBefore + 1,
+              "teardown with a surviving instance starts a new retry chain");
+        gTargetBundleID = @"dev.lucasbarake.obsmic.tests.no-such-app";
 
         // A HAL reset invalidates every cached id, so the route is dropped, not
         // destroyed through ids that may now name something else.
