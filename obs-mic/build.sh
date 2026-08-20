@@ -5,7 +5,6 @@ cd "$(dirname "$0")"
 rm -rf build
 mkdir -p build
 
-# --- Virtual device driver (HAL AudioServerPlugIn) ---
 BUNDLE=build/OBSMic.driver
 mkdir -p "$BUNDLE/Contents/MacOS"
 cp driver/Info.plist "$BUNDLE/Contents/Info.plist"
@@ -26,7 +25,6 @@ clang -bundle -O2 \
 
 codesign --force --sign - "$BUNDLE"
 
-# --- Router (process tap -> virtual device) ---
 clang -O2 -fobjc-arc \
     -mmacosx-version-min=14.2 \
     -sectcreate __TEXT __info_plist router/router-info.plist \
@@ -38,12 +36,14 @@ clang -O2 -fobjc-arc \
 
 codesign --force --sign - --identifier dev.lucasbarake.obsmic.router build/obsmic-router
 
-# --- Menu bar level meter app ---
 APP="build/OBS Mic Meter.app"
 mkdir -p "$APP/Contents/MacOS"
 cp meter/Info.plist "$APP/Contents/Info.plist"
 
+# Without an explicit target swiftc stamps the SDK's default deployment target,
+# which LaunchServices then refuses on the macOS versions this tool supports.
 swiftc -O \
+    -target "$(uname -m)-apple-macos14.2" \
     -framework AppKit \
     -framework AVFoundation \
     -framework CoreAudio \

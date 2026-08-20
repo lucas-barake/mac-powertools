@@ -1,27 +1,29 @@
 // OBS Mic Meter: menu bar level meter for the "OBS Mic" virtual device.
-// The status item icon is a live level bar; the popover shows a larger meter
-// plus a health check for each link in the chain (driver, router, OBS, mic
-// permission), so a dead tunnel is diagnosable at a glance.
+// The popover also health-checks each link in the chain (driver, router, OBS,
+// mic permission), so a dead tunnel is diagnosable at a glance.
 
 import AppKit
 import AVFoundation
 import CoreAudio
+import os
 
 let kVirtualDeviceUID = "OBSMic_UID" as CFString
 let kOBSBundleID = "com.obsproject.obs-studio"
 
+struct Levels: Sendable {
+    var rms: Double = 0
+    var peak: Double = 0
+}
+
 final class LevelCapture {
     private var deviceID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
-    private let lock = NSLock()
-    private var currentRMS: Double = 0
-    private var currentPeak: Double = 0
+    // Written from the CoreAudio IO thread, read from the main thread. The IO
+    // thread only ever tries the lock, so it can never be made to wait on a
+    // lower-priority thread and miss its deadline.
+    private let published = OSAllocatedUnfairLock(initialState: Levels())
 
     var isCapturing: Bool { ioProcID != nil }
-
-    func deviceExists() -> Bool {
-        resolveDevice() != kAudioObjectUnknown
-    }
 
     private func resolveDevice() -> AudioObjectID {
         var addr = AudioObjectPropertyAddress(
@@ -52,9 +54,12 @@ final class LevelCapture {
         deviceID = dev
 
         var procID: AudioDeviceIOProcID?
+        // The block runs directly on the IO thread, so it captures the lock
+        // rather than self: resolving a weak reference there would take the
+        // runtime's side-table lock and release the object on a real-time thread.
+        let published = self.published
         let err = AudioDeviceCreateIOProcIDWithBlock(&procID, dev, nil) {
-            [weak self] _, inInputData, _, _, _ in
-            guard let self else { return }
+            _, inInputData, _, _, _ in
             var sumSquares: Double = 0
             var count: Int = 0
             var peak: Double = 0
@@ -72,11 +77,12 @@ final class LevelCapture {
                 count += n
             }
             let rms = count > 0 ? (sumSquares / Double(count)).squareRoot() : 0
-            self.lock.lock()
-            // Fast attack, slow decay, so short bursts stay visible.
-            self.currentRMS = max(rms, self.currentRMS * 0.85)
-            self.currentPeak = max(peak, self.currentPeak * 0.95)
-            self.lock.unlock()
+            let cyclePeak = peak
+            published.withLockIfAvailable { levels in
+                // Fast attack, slow decay, so short bursts stay visible.
+                levels.rms = max(rms, levels.rms * 0.85)
+                levels.peak = max(cyclePeak, levels.peak * 0.95)
+            }
         }
         guard err == noErr, let procID else { return }
         if AudioDeviceStart(dev, procID) == noErr {
@@ -93,16 +99,11 @@ final class LevelCapture {
         }
         ioProcID = nil
         deviceID = AudioObjectID(kAudioObjectUnknown)
-        lock.lock()
-        currentRMS = 0
-        currentPeak = 0
-        lock.unlock()
+        published.withLock { $0 = Levels() }
     }
 
-    func levels() -> (rms: Double, peak: Double) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (currentRMS, currentPeak)
+    func levels() -> Levels {
+        published.withLock { $0 }
     }
 }
 
@@ -113,6 +114,12 @@ func decibels(_ linear: Double) -> Double {
 // 0...1 position on the meter for a -60...0 dB scale.
 func meterFraction(_ linear: Double) -> Double {
     (decibels(linear) + 60) / 60
+}
+
+// Shared so the menu bar bar and the popover meter can never disagree on where
+// the level stops being healthy.
+func meterColor(_ fraction: CGFloat) -> NSColor {
+    fraction > 0.92 ? .systemRed : fraction > 0.75 ? .systemYellow : .systemGreen
 }
 
 final class MeterView: NSView {
@@ -129,9 +136,7 @@ final class MeterView: NSView {
         if fraction > 0.01 {
             var fillRect = barRect
             fillRect.size.width = barRect.width * fraction
-            let color: NSColor = fraction > 0.92 ? .systemRed
-                : fraction > 0.75 ? .systemYellow : .systemGreen
-            color.setFill()
+            meterColor(fraction).setFill()
             NSBezierPath(roundedRect: fillRect, xRadius: radius, yRadius: radius).fill()
         }
 
@@ -224,9 +229,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         capture.ensureCapturing()
         checkRouter()
 
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        let tickTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        // Common modes, or the meter freezes for as long as the status item,
+        // a menu, or a modal panel is tracking events.
+        RunLoop.main.add(tickTimer, forMode: .common)
+        timer = tickTimer
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -248,7 +257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             checkRouter()
         }
 
-        let (rms, peak) = capture.levels()
+        let levels = capture.levels()
+        let (rms, peak) = (levels.rms, levels.peak)
         let dark = statusItem.button?.effectiveAppearance
             .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         statusItem.button?.image = menuBarImage(
@@ -277,7 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popoverVC.micRow.set(
                 ok: micOK,
                 text: micOK ? "Mic access: granted"
-                            : "Mic access: denied — meter reads silence")
+                            : "Mic access: denied, meter reads silence")
         }
     }
 
@@ -290,7 +300,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         task.terminationHandler = { [weak self] p in
             DispatchQueue.main.async { self?.routerRunning = p.terminationStatus == 0 }
         }
-        try? task.run()
+        do {
+            try task.run()
+        } catch {
+            NSLog("OBS Mic Meter: could not launch pgrep: %@", "\(error)")
+            routerRunning = false
+        }
     }
 
     func menuBarImage(rms: Double, deviceOK: Bool, dark: Bool) -> NSImage {
@@ -328,9 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if fraction > 0.01 {
                 var fill = bar.insetBy(dx: 1.5, dy: 1.5)
                 fill.size.width *= fraction
-                let color: NSColor = fraction > 0.92 ? .systemRed
-                    : fraction > 0.75 ? .systemYellow : .systemGreen
-                color.setFill()
+                meterColor(fraction).setFill()
                 NSBezierPath(roundedRect: fill, xRadius: 2, yRadius: 2).fill()
             }
             return true

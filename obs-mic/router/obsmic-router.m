@@ -11,18 +11,22 @@
 #import <CoreAudio/CATapDescription.h>
 
 static NSString *const kDefaultBundleID = @"com.obsproject.obs-studio";
-static NSString *const kVirtualDeviceUID = @"OBSMic_UID";
-
 static NSString *gTargetBundleID;
+static NSString *const kVirtualDeviceUID = @"OBSMic_UID";
 
 typedef struct {
     AudioObjectID tapID;
     AudioObjectID aggregateID;
     AudioDeviceIOProcID ioProcID;
+    pid_t routedPID;
     BOOL running;
 } RouterState;
 
-static RouterState gState = {kAudioObjectUnknown, kAudioObjectUnknown, NULL, NO};
+static RouterState gState = {kAudioObjectUnknown, kAudioObjectUnknown, NULL, 0, NO};
+
+// Bumped whenever a new retry chain should supersede any pending one, so a
+// relaunch or coreaudiod reset never leaves two chains retrying the same pid.
+static unsigned gRouteGeneration = 0;
 
 // The virtual device contributes its own input streams to the aggregate ahead of
 // the tap's, so the tap's buffers start after them in inInputData.
@@ -37,7 +41,8 @@ static void logmsg(NSString *fmt, ...) {
 }
 
 // The tap arrives as input buffers, the virtual device as output buffers.
-// Both are Float32; channel counts are matched buffer-by-buffer for safety.
+// Both sides are always 2-channel Float32: the tap is a stereo mixdown, and the
+// OBSMic driver refuses any stream format whose channel count is not its own.
 static OSStatus RouterIOProc(AudioObjectID inDevice,
                              const AudioTimeStamp *inNow,
                              const AudioBufferList *inInputData,
@@ -51,61 +56,48 @@ static OSStatus RouterIOProc(AudioObjectID inDevice,
         UInt32 srcIndex = gTapInputOffset + i;
         if (inInputData == NULL || srcIndex >= inInputData->mNumberBuffers) continue;
         const AudioBuffer *in = &inInputData->mBuffers[srcIndex];
-        if (in->mNumberChannels == out->mNumberChannels) {
-            memcpy(out->mData, in->mData, MIN(in->mDataByteSize, out->mDataByteSize));
-        } else {
-            UInt32 inFrames = in->mDataByteSize / (in->mNumberChannels * sizeof(Float32));
-            UInt32 outFrames = out->mDataByteSize / (out->mNumberChannels * sizeof(Float32));
-            UInt32 frames = MIN(inFrames, outFrames);
-            UInt32 chans = MIN(in->mNumberChannels, out->mNumberChannels);
-            const Float32 *src = in->mData;
-            Float32 *dst = out->mData;
-            for (UInt32 f = 0; f < frames; f++) {
-                for (UInt32 c = 0; c < chans; c++) {
-                    dst[f * out->mNumberChannels + c] = src[f * in->mNumberChannels + c];
-                }
-            }
-        }
+        memcpy(out->mData, in->mData, MIN(in->mDataByteSize, out->mDataByteSize));
     }
     return noErr;
 }
 
-static AudioObjectID CopyProcessObjectForPID(pid_t pid) {
+// Every property the router reads is on the global scope and main element.
+static OSStatus GetAudioProperty(AudioObjectID object,
+                                 AudioObjectPropertySelector selector,
+                                 UInt32 qualifierSize, const void *qualifier,
+                                 UInt32 dataSize, void *outData) {
     AudioObjectPropertyAddress addr = {
-        kAudioHardwarePropertyTranslatePIDToProcessObject,
+        selector,
         kAudioObjectPropertyScopeGlobal,
         kAudioObjectPropertyElementMain,
     };
+    return AudioObjectGetPropertyData(object, &addr, qualifierSize, qualifier,
+                                      &dataSize, outData);
+}
+
+static AudioObjectID CopyProcessObjectForPID(pid_t pid) {
     AudioObjectID processObject = kAudioObjectUnknown;
-    UInt32 size = sizeof(processObject);
-    OSStatus err = AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr,
-                                              sizeof(pid), &pid, &size, &processObject);
+    OSStatus err = GetAudioProperty(kAudioObjectSystemObject,
+                                    kAudioHardwarePropertyTranslatePIDToProcessObject,
+                                    sizeof(pid), &pid,
+                                    sizeof(processObject), &processObject);
     return (err == noErr) ? processObject : kAudioObjectUnknown;
 }
 
 static AudioObjectID CopyDeviceForUID(NSString *uid) {
-    AudioObjectPropertyAddress addr = {
-        kAudioHardwarePropertyTranslateUIDToDevice,
-        kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMain,
-    };
     CFStringRef cfUID = (__bridge CFStringRef)uid;
     AudioObjectID deviceID = kAudioObjectUnknown;
-    UInt32 size = sizeof(deviceID);
-    OSStatus err = AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr,
-                                              sizeof(cfUID), &cfUID, &size, &deviceID);
+    OSStatus err = GetAudioProperty(kAudioObjectSystemObject,
+                                    kAudioHardwarePropertyTranslateUIDToDevice,
+                                    sizeof(cfUID), &cfUID,
+                                    sizeof(deviceID), &deviceID);
     return (err == noErr) ? deviceID : kAudioObjectUnknown;
 }
 
 static NSString *CopyTapUID(AudioObjectID tapID) {
-    AudioObjectPropertyAddress addr = {
-        kAudioTapPropertyUID,
-        kAudioObjectPropertyScopeGlobal,
-        kAudioObjectPropertyElementMain,
-    };
     CFStringRef uid = NULL;
-    UInt32 size = sizeof(uid);
-    OSStatus err = AudioObjectGetPropertyData(tapID, &addr, 0, NULL, &size, &uid);
+    OSStatus err = GetAudioProperty(tapID, kAudioTapPropertyUID,
+                                    0, NULL, sizeof(uid), &uid);
     return (err == noErr) ? (__bridge_transfer NSString *)uid : nil;
 }
 
@@ -123,6 +115,18 @@ static void TearDown(void) {
         AudioHardwareDestroyProcessTap(gState.tapID);
         gState.tapID = kAudioObjectUnknown;
     }
+    gState.routedPID = 0;
+    gState.running = NO;
+}
+
+// A coreaudiod restart takes the tap and the aggregate with it and invalidates
+// every object id we hold, so the ids are dropped instead of destroyed: they may
+// already name something else.
+static void ForgetRoute(void) {
+    gState.tapID = kAudioObjectUnknown;
+    gState.aggregateID = kAudioObjectUnknown;
+    gState.ioProcID = NULL;
+    gState.routedPID = 0;
     gState.running = NO;
 }
 
@@ -135,7 +139,7 @@ static BOOL BuildRoute(pid_t obsPID) {
 
     AudioObjectID virtualDevice = CopyDeviceForUID(kVirtualDeviceUID);
     if (virtualDevice == kAudioObjectUnknown) {
-        logmsg(@"virtual device %@ not found — is the OBSMic driver installed?", kVirtualDeviceUID);
+        logmsg(@"virtual device %@ not found. Is the OBSMic driver installed?", kVirtualDeviceUID);
         return NO;
     }
 
@@ -173,7 +177,7 @@ static BOOL BuildRoute(pid_t obsPID) {
         return NO;
     }
 
-    // The virtual device is the aggregate's clock master; the tap is
+    // The virtual device is the aggregate's clock master. The tap is
     // drift-compensated against it, so no clock skew can accumulate.
     NSDictionary *aggDesc = @{
         @kAudioAggregateDeviceUIDKey :
@@ -214,6 +218,7 @@ static BOOL BuildRoute(pid_t obsPID) {
         return NO;
     }
 
+    gState.routedPID = obsPID;
     gState.running = YES;
     logmsg(@"routing %@ (pid %d) -> OBS Mic", gTargetBundleID, obsPID);
     return YES;
@@ -225,21 +230,37 @@ static NSRunningApplication *FindOBS(void) {
     return apps.firstObject;
 }
 
-// coreaudiod learns about a process shortly after it starts doing audio,
-// so retry translation with backoff instead of failing once.
-static void TryBuildRouteWithRetries(pid_t pid, int attempt) {
-    if (gState.running) return;
+// coreaudiod learns about a process shortly after it starts doing audio, and
+// the first tap creation can fail until the user answers the system audio
+// permission prompt, so keep retrying for as long as the app is alive. The
+// chain ends on its own once the pid is gone or a route is up.
+static void RetryChain(pid_t pid, int attempt, unsigned generation) {
+    if (generation != gRouteGeneration || gState.running) return;
     NSRunningApplication *obs = FindOBS();
     if (obs == nil || obs.processIdentifier != pid) return;
     if (BuildRoute(pid)) return;
-    if (attempt >= 30) {
-        logmsg(@"giving up on pid %d after %d attempts", pid, attempt);
-        return;
-    }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+    int delay = MIN(2 * (attempt + 1), 10);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay * NSEC_PER_SEC),
                    dispatch_get_main_queue(), ^{
-        TryBuildRouteWithRetries(pid, attempt + 1);
+        RetryChain(pid, attempt + 1, generation);
     });
+}
+
+static void StartRouteChain(pid_t pid) {
+    RetryChain(pid, 0, ++gRouteGeneration);
+}
+
+static void HandleAppLaunched(pid_t pid) {
+    logmsg(@"%@ launched (pid %d)", gTargetBundleID, pid);
+    StartRouteChain(pid);
+}
+
+// A terminate notification can arrive after a relaunch has already been routed,
+// so only the instance actually being routed may tear the route down.
+static void HandleAppTerminated(pid_t pid) {
+    if (!gState.running || gState.routedPID != pid) return;
+    logmsg(@"%@ (pid %d) terminated, tearing down route", gTargetBundleID, pid);
+    TearDown();
 }
 
 int main(int argc, const char *argv[]) {
@@ -254,8 +275,7 @@ int main(int argc, const char *argv[]) {
                         usingBlock:^(NSNotification *note) {
             NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
             if ([app.bundleIdentifier isEqualToString:gTargetBundleID]) {
-                logmsg(@"%@ launched (pid %d)", gTargetBundleID, app.processIdentifier);
-                TryBuildRouteWithRetries(app.processIdentifier, 0);
+                HandleAppLaunched(app.processIdentifier);
             }
         }];
         [center addObserverForName:NSWorkspaceDidTerminateApplicationNotification
@@ -264,10 +284,25 @@ int main(int argc, const char *argv[]) {
                         usingBlock:^(NSNotification *note) {
             NSRunningApplication *app = note.userInfo[NSWorkspaceApplicationKey];
             if ([app.bundleIdentifier isEqualToString:gTargetBundleID]) {
-                logmsg(@"%@ terminated, tearing down route", gTargetBundleID);
-                TearDown();
+                HandleAppTerminated(app.processIdentifier);
             }
         }];
+
+        // kAudioHardwarePropertyServiceRestarted: "any state the client has, such
+        // as cached data or added listeners, must be re-established by the client."
+        AudioObjectPropertyAddress restartAddr = {
+            kAudioHardwarePropertyServiceRestarted,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMain,
+        };
+        AudioObjectAddPropertyListenerBlock(
+            kAudioObjectSystemObject, &restartAddr, dispatch_get_main_queue(),
+            ^(UInt32 inNumberAddresses, const AudioObjectPropertyAddress *inAddresses) {
+                logmsg(@"coreaudiod restarted, rebuilding route");
+                ForgetRoute();
+                NSRunningApplication *running = FindOBS();
+                if (running != nil) StartRouteChain(running.processIdentifier);
+            });
 
         void (^shutdown)(void) = ^{
             logmsg(@"shutting down");
@@ -288,7 +323,7 @@ int main(int argc, const char *argv[]) {
         NSRunningApplication *obs = FindOBS();
         if (obs != nil) {
             logmsg(@"%@ already running (pid %d)", gTargetBundleID, obs.processIdentifier);
-            TryBuildRouteWithRetries(obs.processIdentifier, 0);
+            StartRouteChain(obs.processIdentifier);
         } else {
             logmsg(@"waiting for %@ to launch", gTargetBundleID);
         }

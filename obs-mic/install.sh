@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-if [[ ! -d build/OBSMic.driver || ! -f build/obsmic-router ]]; then
+if [[ ! -d build/OBSMic.driver || ! -f build/obsmic-router || ! -d "build/OBS Mic Meter.app" ]]; then
     ./build.sh
 fi
 
@@ -47,20 +47,29 @@ cp -R "build/OBS Mic Meter.app" /Applications/
 open "/Applications/OBS Mic Meter.app"
 
 echo
-echo "Done. Waiting for the 'OBS Mic' device to appear..."
+echo "Waiting for the 'OBS Mic' device to appear..."
+registered=false
 for i in $(seq 1 15); do
-    if system_profiler SPAudioDataType 2>/dev/null | grep -q "OBS Mic"; then
-        echo "'OBS Mic' is registered."
+    if system_profiler SPAudioDataType | grep -q "OBS Mic"; then
+        registered=true
         break
     fi
     sleep 1
 done
 
+if [[ "$registered" != true ]]; then
+    echo "ERROR: 'OBS Mic' did not register with coreaudiod after 15s." >&2
+    echo "The driver is installed but coreaudiod rejected it. Check:" >&2
+    echo "  log show --last 2m --predicate 'process == \"coreaudiod\"' | grep -i obsmic" >&2
+    exit 1
+fi
+
+echo "'OBS Mic' is registered."
 echo
 echo "Next steps:"
 echo "  1. In OBS: Edit -> Advanced Audio Properties -> set your mic source's"
 echo "     Audio Monitoring to 'Monitor and Output'."
 echo "  2. Launch OBS. macOS will ask once to allow obsmic-router to record"
-echo "     system audio — approve it."
+echo "     system audio. Approve it."
 echo "  3. Pick 'OBS Mic' as the microphone in any app."
 echo "Router log: ~/Library/Logs/obsmic-router.log"
