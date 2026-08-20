@@ -37,7 +37,14 @@ cat > "$AGENT" <<EOF
 </plist>
 EOF
 
-launchctl bootout "gui/$(id -u)/dev.lucasbarake.obsmic.router" 2>/dev/null || true
+LABEL=dev.lucasbarake.obsmic.router
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# bootout returns before launchd has finished unloading the service, and a
+# bootstrap issued in that window fails with "Input/output error".
+for i in $(seq 1 20); do
+    launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.5
+done
 launchctl bootstrap "gui/$(id -u)" "$AGENT"
 
 echo "Installing OBS Mic Meter.app..."
