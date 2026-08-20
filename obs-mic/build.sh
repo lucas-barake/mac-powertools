@@ -38,6 +38,21 @@ clang -O2 -fobjc-arc \
 
 codesign --force --sign - --identifier dev.lucasbarake.obsmic.router build/obsmic-router
 
+# --- Menu bar level meter app ---
+APP="build/OBS Mic Meter.app"
+mkdir -p "$APP/Contents/MacOS"
+cp meter/Info.plist "$APP/Contents/Info.plist"
+
+swiftc -O \
+    -framework AppKit \
+    -framework AVFoundation \
+    -framework CoreAudio \
+    -o "$APP/Contents/MacOS/OBSMicMeter" \
+    meter/OBSMicMeter.swift
+
+codesign --force --sign - "$APP"
+
 echo "Built:"
 echo "  $BUNDLE"
 echo "  build/obsmic-router"
+echo "  $APP"

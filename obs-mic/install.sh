@@ -40,6 +40,12 @@ EOF
 launchctl bootout "gui/$(id -u)/dev.lucasbarake.obsmic.router" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$AGENT"
 
+echo "Installing OBS Mic Meter.app..."
+osascript -e 'tell application "OBS Mic Meter" to quit' 2>/dev/null || true
+rm -rf "/Applications/OBS Mic Meter.app"
+cp -R "build/OBS Mic Meter.app" /Applications/
+open "/Applications/OBS Mic Meter.app"
+
 echo
 echo "Done. Waiting for the 'OBS Mic' device to appear..."
 for i in $(seq 1 15); do
