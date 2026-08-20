@@ -10,6 +10,29 @@ import os
 let kVirtualDeviceUID = "OBSMic_UID" as CFString
 let kOBSBundleID = "com.obsproject.obs-studio"
 
+// Shared with obsmic-router, which applies the gain in its IO callback.
+let kPrefsDomain = "dev.lucasbarake.obsmic" as CFString
+let kOutputGainKey = "OutputGain" as CFString
+let kSettingsChangedNotification = Notification.Name("dev.lucasbarake.obsmic.settingsChanged")
+let kMaxOutputGain: Float = 4.0
+
+enum RouterSettings {
+    static func outputGain() -> Float {
+        CFPreferencesAppSynchronize(kPrefsDomain)
+        let value = CFPreferencesCopyAppValue(kOutputGainKey, kPrefsDomain)
+        guard let number = value as? NSNumber else { return 1.0 }
+        let gain = number.floatValue
+        return (gain >= 0 && gain <= kMaxOutputGain) ? gain : 1.0
+    }
+
+    static func setOutputGain(_ gain: Float) {
+        CFPreferencesSetAppValue(kOutputGainKey, NSNumber(value: gain), kPrefsDomain)
+        CFPreferencesAppSynchronize(kPrefsDomain)
+        DistributedNotificationCenter.default().postNotificationName(
+            kSettingsChangedNotification, object: nil, userInfo: nil, deliverImmediately: true)
+    }
+}
+
 struct Levels: Sendable {
     var rms: Double = 0
     var peak: Double = 0
@@ -178,6 +201,21 @@ final class PopoverViewController: NSViewController {
     let routerRow = StatusRow(title: "Router")
     let obsRow = StatusRow(title: "OBS")
     let micRow = StatusRow(title: "Mic access")
+    let gainLabel = NSTextField(labelWithString: "Output gain: 100%")
+    let gainSlider = NSSlider(value: 1.0, minValue: 0.0, maxValue: Double(kMaxOutputGain),
+                              target: nil, action: #selector(gainChanged(_:)))
+
+    @objc func gainChanged(_ sender: NSSlider) {
+        // Snap near 100% so unity is easy to hit by hand.
+        var gain = Float(sender.doubleValue)
+        if abs(gain - 1.0) < 0.05 { gain = 1.0; sender.doubleValue = 1.0 }
+        RouterSettings.setOutputGain(gain)
+        showGain(gain)
+    }
+
+    func showGain(_ gain: Float) {
+        gainLabel.stringValue = String(format: "Output gain: %.0f%%", gain * 100)
+    }
 
     override func loadView() {
         let stack = NSStackView()
@@ -196,11 +234,21 @@ final class PopoverViewController: NSViewController {
         dbLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         dbLabel.textColor = .secondaryLabelColor
 
+        gainLabel.font = .systemFont(ofSize: 12)
+        gainSlider.target = self
+        gainSlider.translatesAutoresizingMaskIntoConstraints = false
+        gainSlider.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        gainSlider.numberOfTickMarks = 9
+        let initialGain = RouterSettings.outputGain()
+        gainSlider.doubleValue = Double(initialGain)
+        showGain(initialGain)
+
         let quit = NSButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
         quit.bezelStyle = .rounded
         quit.controlSize = .small
 
-        for v in [title, meterView, dbLabel, driverRow, routerRow, obsRow, micRow, quit] {
+        for v in [title, meterView, dbLabel, gainLabel, gainSlider,
+                  driverRow, routerRow, obsRow, micRow, quit] {
             stack.addArrangedSubview(v)
         }
         view = stack

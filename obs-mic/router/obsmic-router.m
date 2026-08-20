@@ -9,10 +9,21 @@
 #import <CoreAudio/CoreAudio.h>
 #import <CoreAudio/AudioHardwareTapping.h>
 #import <CoreAudio/CATapDescription.h>
+#import <Accelerate/Accelerate.h>
+#import <stdatomic.h>
 
 static NSString *const kDefaultBundleID = @"com.obsproject.obs-studio";
 static NSString *gTargetBundleID;
 static NSString *const kVirtualDeviceUID = @"OBSMic_UID";
+
+// Shared with the meter app, which owns the UI for these.
+static NSString *const kPrefsDomain = @"dev.lucasbarake.obsmic";
+static NSString *const kOutputGainKey = @"OutputGain";
+static NSString *const kSettingsChangedNotification = @"dev.lucasbarake.obsmic.settingsChanged";
+static const float kMaxOutputGain = 4.0f;
+
+// Read on the IO thread, written on the main queue.
+static _Atomic float gOutputGain = 1.0f;
 
 typedef struct {
     AudioObjectID tapID;
@@ -40,6 +51,27 @@ static void logmsg(NSString *fmt, ...) {
     fprintf(stderr, "[obsmic-router] %s\n", msg.UTF8String);
 }
 
+// A missing or corrupt preference means unity, never silence.
+static float LoadOutputGain(CFStringRef domain) {
+    CFPreferencesAppSynchronize(domain);
+    CFPropertyListRef value = CFPreferencesCopyAppValue((__bridge CFStringRef)kOutputGainKey, domain);
+    float gain = 1.0f;
+    if (value != NULL) {
+        if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+            CFNumberGetValue(value, kCFNumberFloatType, &gain);
+        }
+        CFRelease(value);
+    }
+    if (!(gain >= 0.0f && gain <= kMaxOutputGain)) gain = 1.0f;
+    return gain;
+}
+
+static void ReloadSettings(void) {
+    float gain = LoadOutputGain((__bridge CFStringRef)kPrefsDomain);
+    atomic_store(&gOutputGain, gain);
+    logmsg(@"output gain %.0f%%", gain * 100);
+}
+
 // The tap arrives as input buffers, the virtual device as output buffers.
 // Both sides are always 2-channel Float32: the tap is a stereo mixdown, and the
 // OBSMic driver refuses any stream format whose channel count is not its own.
@@ -57,6 +89,11 @@ static OSStatus RouterIOProc(AudioObjectID inDevice,
         if (inInputData == NULL || srcIndex >= inInputData->mNumberBuffers) continue;
         const AudioBuffer *in = &inInputData->mBuffers[srcIndex];
         memcpy(out->mData, in->mData, MIN(in->mDataByteSize, out->mDataByteSize));
+        float gain = atomic_load_explicit(&gOutputGain, memory_order_relaxed);
+        if (gain != 1.0f) {
+            vDSP_vsmul(out->mData, 1, &gain, out->mData, 1,
+                       out->mDataByteSize / sizeof(Float32));
+        }
     }
     return noErr;
 }
@@ -267,6 +304,13 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         gTargetBundleID = (argc > 1) ? @(argv[1]) : kDefaultBundleID;
         logmsg(@"starting, target app: %@", gTargetBundleID);
+
+        ReloadSettings();
+        [[NSDistributedNotificationCenter defaultCenter]
+            addObserverForName:kSettingsChangedNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) { ReloadSettings(); }];
 
         NSNotificationCenter *center = [[NSWorkspace sharedWorkspace] notificationCenter];
         [center addObserverForName:NSWorkspaceDidLaunchApplicationNotification

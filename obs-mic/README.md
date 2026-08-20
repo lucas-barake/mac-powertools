@@ -31,8 +31,10 @@ Requires macOS 14.2 or newer.
 The virtual device applies no volume of its own. BlackHole maps the macOS input level
 slider onto a 64 dB range, so a slider at 69% silently costs 20 dB, and apps with automatic
 level control keep dragging it down. The driver is therefore built with its volume control
-disabled: the slider macOS still shows for "OBS Mic" does nothing, and what comes out is
-exactly what OBS put in.
+disabled: the slider macOS still shows for "OBS Mic" does nothing. The one gain stage in
+the tunnel is the **Output gain** slider in the meter popover (0 to 400%), which the router
+applies in its IO callback. It is stored in the `dev.lucasbarake.obsmic` preference domain
+and picked up by the router immediately.
 
 ## Install
 

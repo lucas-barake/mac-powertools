@@ -32,6 +32,7 @@ clang -O2 -fobjc-arc \
     -framework Foundation \
     -framework AppKit \
     -framework CoreAudio \
+    -framework Accelerate \
     -o build/obsmic-router \
     router/obsmic-router.m
 
