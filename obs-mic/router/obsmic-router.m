@@ -24,6 +24,9 @@ static const float kMaxOutputGain = 4.0f;
 
 // Read on the IO thread, written on the main queue.
 static _Atomic float gOutputGain = 1.0f;
+// IO thread only: the gain the last buffer ended on, so a change ramps across
+// one buffer instead of stepping, which would click.
+static float gAppliedGain = 1.0f;
 
 typedef struct {
     AudioObjectID tapID;
@@ -90,9 +93,14 @@ static OSStatus RouterIOProc(AudioObjectID inDevice,
         const AudioBuffer *in = &inInputData->mBuffers[srcIndex];
         memcpy(out->mData, in->mData, MIN(in->mDataByteSize, out->mDataByteSize));
         float gain = atomic_load_explicit(&gOutputGain, memory_order_relaxed);
-        if (gain != 1.0f) {
-            vDSP_vsmul(out->mData, 1, &gain, out->mData, 1,
-                       out->mDataByteSize / sizeof(Float32));
+        vDSP_Length count = out->mDataByteSize / sizeof(Float32);
+        if (gain != gAppliedGain && count > 0) {
+            float start = gAppliedGain;
+            float step = (gain - start) / (float)count;
+            vDSP_vrampmul(out->mData, 1, &start, &step, out->mData, 1, count);
+            gAppliedGain = gain;
+        } else if (gain != 1.0f) {
+            vDSP_vsmul(out->mData, 1, &gain, out->mData, 1, count);
         }
     }
     return noErr;

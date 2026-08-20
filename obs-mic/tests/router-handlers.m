@@ -73,10 +73,14 @@ int main(void) {
         gTapInputOffset = 0;
         atomic_store(&gOutputGain, 2.0f);
         RouterIOProc(0, NULL, &inList, NULL, &outList, NULL, NULL);
+        CHECK(fabsf(outSamples[0] - 0.1f) < 1e-6f && fabsf(outSamples[3] - (-0.4f * 1.75f)) < 1e-6f,
+              "first buffer after a gain change ramps from the old gain to the new one");
+        RouterIOProc(0, NULL, &inList, NULL, &outList, NULL, NULL);
         CHECK(outSamples[0] == 0.2f && outSamples[1] == -0.4f
                   && outSamples[2] == 0.6f && outSamples[3] == -0.8f,
-              "IOProc scales copied samples by the output gain");
+              "following buffers are scaled by the output gain");
         atomic_store(&gOutputGain, 1.0f);
+        RouterIOProc(0, NULL, &inList, NULL, &outList, NULL, NULL);
         RouterIOProc(0, NULL, &inList, NULL, &outList, NULL, NULL);
         CHECK(outSamples[3] == -0.4f, "unity gain copies samples unchanged");
 
