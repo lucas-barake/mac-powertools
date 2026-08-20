@@ -23,8 +23,10 @@ Three parts:
   glance. `install.sh` copies it in and launches it.
 
 Why this beats a bare BlackHole setup: no Audio MIDI Setup, no multi-output device to
-silently break after macOS updates, no manual drift-correction checkbox, and OBS's
-monitoring still reaches your headphones because the tap is created unmuted.
+silently break after macOS updates, no manual drift-correction checkbox, and no second
+virtual device to park OBS's monitor on. The tap is created muted, so OBS can monitor to
+your normal output device and you never hear your own mic. If you do hear it, the router is
+not attached, which is the only time OBS's monitor reaches the speakers.
 
 Requires macOS 14.2 or newer.
 
@@ -46,7 +48,7 @@ and picked up by the router immediately.
 Then, once:
 
 1. In OBS: Edit → Advanced Audio Properties → set the sources you want on the virtual
-   mic to **Monitor and Output**.
+   mic to **Monitor and Output**. Leave Settings → Audio → Monitoring Device on Default.
 2. Launch OBS. Approve the one-time "record system audio" permission prompt for
    `obsmic-router`.
 3. Approve the microphone prompt for "OBS Mic Meter" if you want the menu bar level to

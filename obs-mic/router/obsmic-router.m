@@ -196,8 +196,10 @@ static BOOL BuildRoute(pid_t obsPID) {
         [[CATapDescription alloc] initStereoMixdownOfProcesses:@[ @(processObject) ]];
     desc.name = @"OBS Mic Tap";
     desc.privateTap = YES;
-    // Unmuted: OBS's own monitoring output keeps playing wherever the user points it.
-    desc.muteBehavior = CATapUnmuted;
+    // Muted: the tap still receives everything OBS plays, but none of it reaches
+    // the speakers, so OBS can monitor to any output device without the user
+    // hearing their own mic. No inaudible sink device is needed.
+    desc.muteBehavior = CATapMuted;
 
     AudioObjectID tapID = kAudioObjectUnknown;
     OSStatus err = AudioHardwareCreateProcessTap(desc, &tapID);
