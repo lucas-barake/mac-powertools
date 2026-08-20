@@ -47,6 +47,7 @@ final class LevelCapture {
     private let published = OSAllocatedUnfairLock(initialState: Levels())
 
     var isCapturing: Bool { ioProcID != nil }
+    var device: AudioObjectID { deviceID }
 
     private func resolveDevice() -> AudioObjectID {
         var addr = AudioObjectPropertyAddress(
@@ -130,6 +131,149 @@ final class LevelCapture {
     }
 }
 
+func defaultOutputDevice() -> AudioObjectID {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var dev = AudioObjectID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    let err = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &dev)
+    return err == noErr ? dev : AudioObjectID(kAudioObjectUnknown)
+}
+
+func deviceUID(_ device: AudioObjectID) -> String? {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceUID,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var uid: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    let err = AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &uid)
+    return err == noErr ? uid?.takeRetainedValue() as String? : nil
+}
+
+func deviceName(_ device: AudioObjectID) -> String {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioObjectPropertyName,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var name: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    let err = AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &name)
+    return err == noErr ? (name?.takeRetainedValue() as String?) ?? "?" : "?"
+}
+
+func streamCount(_ device: AudioObjectID, scope: AudioObjectPropertyScope) -> Int {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyStreams,
+        mScope: scope,
+        mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(device, &addr, 0, nil, &size) == noErr else { return 0 }
+    return Int(size) / MemoryLayout<AudioObjectID>.size
+}
+
+// Plays what the OBS Mic device delivers to its consumers on the current default
+// output device: one private aggregate with the output device as clock master and
+// the virtual device drift-compensated against it, and a copy in the IO callback.
+// Hearing this is the only honest way to check the tunnel, gain included.
+final class Loopback {
+    private(set) var aggregateID = AudioObjectID(kAudioObjectUnknown)
+    private var ioProcID: AudioDeviceIOProcID?
+    private(set) var outputDevice = AudioObjectID(kAudioObjectUnknown)
+    private(set) var status = "off"
+
+    var isRunning: Bool { ioProcID != nil }
+
+    func start(virtualDevice: AudioObjectID) {
+        stop()
+        let output = defaultOutputDevice()
+        guard output != kAudioObjectUnknown, let outputUID = deviceUID(output) else {
+            status = "no default output device"
+            return
+        }
+        if output == virtualDevice {
+            status = "default output is OBS Mic itself, refusing to loop it"
+            return
+        }
+        // The aggregate lists the virtual device first, so its input buffers come
+        // first in inInputData and its output buffers first in outOutputData. The
+        // physical device's output buffers start after them, and only those are
+        // written: writing into the virtual device's own output would feed the
+        // tunnel back into itself.
+        let outputOffset = streamCount(virtualDevice, scope: kAudioObjectPropertyScopeOutput)
+        let desc: [String: Any] = [
+            kAudioAggregateDeviceUIDKey: "dev.lucasbarake.obsmic.loopback.\(UUID().uuidString)",
+            kAudioAggregateDeviceNameKey: "OBS Mic Loopback",
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+            kAudioAggregateDeviceSubDeviceListKey: [
+                [kAudioSubDeviceUIDKey: kVirtualDeviceUID as String,
+                 kAudioSubDeviceDriftCompensationKey: true],
+                [kAudioSubDeviceUIDKey: outputUID],
+            ],
+        ]
+        var agg = AudioObjectID(kAudioObjectUnknown)
+        var err = AudioHardwareCreateAggregateDevice(desc as CFDictionary, &agg)
+        guard err == noErr else {
+            status = "aggregate failed (\(err))"
+            return
+        }
+        var proc: AudioDeviceIOProcID?
+        err = AudioDeviceCreateIOProcIDWithBlock(&proc, agg, nil) { _, inInputData, _, outOutputData, _ in
+            let outs = UnsafeMutableAudioBufferListPointer(outOutputData)
+            let ins = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inInputData))
+            for i in 0..<outs.count {
+                guard let dst = outs[i].mData else { continue }
+                memset(dst, 0, Int(outs[i].mDataByteSize))
+                if i < outputOffset || ins.count == 0 { continue }
+                guard let src = ins[0].mData else { continue }
+                let inCh = Int(ins[0].mNumberChannels)
+                let outCh = Int(outs[i].mNumberChannels)
+                let frames = min(Int(ins[0].mDataByteSize) / (inCh * 4),
+                                 Int(outs[i].mDataByteSize) / (outCh * 4))
+                let s = src.assumingMemoryBound(to: Float32.self)
+                let d = dst.assumingMemoryBound(to: Float32.self)
+                for f in 0..<frames {
+                    for c in 0..<outCh {
+                        d[f * outCh + c] = s[f * inCh + (c % inCh)]
+                    }
+                }
+            }
+        }
+        guard err == noErr, let proc else {
+            AudioHardwareDestroyAggregateDevice(agg)
+            status = "IO proc failed (\(err))"
+            return
+        }
+        err = AudioDeviceStart(agg, proc)
+        guard err == noErr else {
+            AudioDeviceDestroyIOProcID(agg, proc)
+            AudioHardwareDestroyAggregateDevice(agg)
+            status = "start failed (\(err))"
+            return
+        }
+        aggregateID = agg
+        ioProcID = proc
+        outputDevice = output
+        status = "playing on \(deviceName(output))"
+    }
+
+    func stop() {
+        if let proc = ioProcID {
+            AudioDeviceStop(aggregateID, proc)
+            AudioDeviceDestroyIOProcID(aggregateID, proc)
+            AudioHardwareDestroyAggregateDevice(aggregateID)
+        }
+        ioProcID = nil
+        aggregateID = AudioObjectID(kAudioObjectUnknown)
+        outputDevice = AudioObjectID(kAudioObjectUnknown)
+        status = "off"
+    }
+}
+
 func decibels(_ linear: Double) -> Double {
     linear > 0 ? max(20 * log10(linear), -60) : -60
 }
@@ -201,6 +345,14 @@ final class PopoverViewController: NSViewController {
     let routerRow = StatusRow(title: "Router")
     let obsRow = StatusRow(title: "OBS")
     let micRow = StatusRow(title: "Mic access")
+    let hearButton = NSButton(checkboxWithTitle: "Hear OBS Mic on my speakers", target: nil, action: #selector(hearToggled(_:)))
+    let hearStatus = NSTextField(labelWithString: "")
+    var onHearToggled: ((Bool) -> Void)?
+
+    @objc func hearToggled(_ sender: NSButton) {
+        onHearToggled?(sender.state == .on)
+    }
+
     let gainLabel = NSTextField(labelWithString: "Output gain: 100%")
     let gainSlider = NSSlider(value: 1.0, minValue: 0.0, maxValue: Double(kMaxOutputGain),
                               target: nil, action: #selector(gainChanged(_:)))
@@ -243,11 +395,16 @@ final class PopoverViewController: NSViewController {
         gainSlider.doubleValue = Double(initialGain)
         showGain(initialGain)
 
+        hearButton.target = self
+        hearButton.font = .systemFont(ofSize: 12)
+        hearStatus.font = .systemFont(ofSize: 11)
+        hearStatus.textColor = .secondaryLabelColor
+
         let quit = NSButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
         quit.bezelStyle = .rounded
         quit.controlSize = .small
 
-        for v in [title, meterView, dbLabel, gainLabel, gainSlider,
+        for v in [title, meterView, dbLabel, gainLabel, gainSlider, hearButton, hearStatus,
                   driverRow, routerRow, obsRow, micRow, quit] {
             stack.addArrangedSubview(v)
         }
@@ -257,6 +414,7 @@ final class PopoverViewController: NSViewController {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let capture = LevelCapture()
+    let loopback = Loopback()
     var statusItem: NSStatusItem!
     let popover = NSPopover()
     let popoverVC = PopoverViewController()
@@ -273,6 +431,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover.contentViewController = popoverVC
         popover.behavior = .transient
+        popoverVC.onHearToggled = { [weak self] on in
+            guard let self else { return }
+            if on {
+                self.loopback.start(virtualDevice: self.capture.device)
+            } else {
+                self.loopback.stop()
+            }
+            self.popoverVC.hearStatus.stringValue = self.loopback.status
+        }
 
         capture.ensureCapturing()
         checkRouter()
@@ -287,6 +454,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        loopback.stop()
         capture.stop()
     }
 
@@ -303,6 +471,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if healthTick % 20 == 0 {
             capture.ensureCapturing()
             checkRouter()
+            if popoverVC.hearButton.state == .on {
+                let wanted = capture.isCapturing && loopback.isRunning
+                    && loopback.outputDevice == defaultOutputDevice()
+                if !wanted {
+                    loopback.stop()
+                    if capture.isCapturing { loopback.start(virtualDevice: capture.device) }
+                    popoverVC.hearStatus.stringValue = loopback.status
+                }
+            }
         }
 
         let levels = capture.levels()

@@ -18,9 +18,10 @@ Three parts:
   compensation enabled on the tap, and copies tap input to the virtual device's output in
   the IO callback. CoreAudio handles all resampling and clock skew.
 - **meter/**. "OBS Mic Meter", a menu bar app installed to `/Applications`. Its icon is a
-  live level bar for the virtual device, and its popover health-checks each link in the
-  chain (driver, router, OBS, mic permission) so a silent tunnel is diagnosable at a
-  glance. `install.sh` copies it in and launches it.
+  live level bar for the virtual device. The popover has the output gain slider, a
+  "Hear OBS Mic on my speakers" toggle that plays exactly what other apps receive from the
+  virtual mic on your current default output, and health checks for each link in the
+  chain (driver, router, OBS, mic permission). `install.sh` copies it in and launches it.
 
 Why this beats a bare BlackHole setup: no Audio MIDI Setup, no multi-output device to
 silently break after macOS updates, no manual drift-correction checkbox, and no second
