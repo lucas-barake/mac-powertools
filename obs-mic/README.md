@@ -68,8 +68,8 @@ train through QuickTime. Anything beyond that comes from OBS. Two things to chec
 - OBS grows its internal audio buffer whenever a source delivers late (a sleep/wake, a USB
   hiccup), never shrinks it, and caps at 1000 ms. The log line is `adding N milliseconds of
   audio buffering`. Restarting OBS resets it. Setting `LowLatencyAudioBuffering=true` under
-  `[Audio]` in the profile's `basic.ini` (Settings → Audio → Advanced → Low latency audio
-  buffering mode) stops the growth.
+  `[Audio]` in `user.ini` (Settings → Audio → Advanced → Low latency audio buffering mode)
+  stops the growth; OBS then logs `Enabling fixed audio buffering`.
 - Filters such as noise suppression add their own processing delay.
 
 ## Testing the tunnel without OBS
