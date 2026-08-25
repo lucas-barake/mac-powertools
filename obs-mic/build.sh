@@ -26,18 +26,6 @@ clang -bundle -O2 \
 
 codesign --force --sign - "$BUNDLE"
 
-clang -O2 -fobjc-arc \
-    -mmacosx-version-min=14.2 \
-    -sectcreate __TEXT __info_plist router/router-info.plist \
-    -framework Foundation \
-    -framework AppKit \
-    -framework CoreAudio \
-    -framework Accelerate \
-    -o build/obsmic-router \
-    router/obsmic-router.m
-
-codesign --force --sign - --identifier dev.lucasbarake.obsmic.router build/obsmic-router
-
 APP="build/OBS Mic Meter.app"
 mkdir -p "$APP/Contents/MacOS"
 cp meter/Info.plist "$APP/Contents/Info.plist"
@@ -56,5 +44,4 @@ codesign --force --sign - "$APP"
 
 echo "Built:"
 echo "  $BUNDLE"
-echo "  build/obsmic-router"
 echo "  $APP"

@@ -1,43 +1,36 @@
 # obs-mic
 
 Exposes OBS Studio's processed audio as a virtual microphone called **OBS Mic** that any
-app (Zoom, Meet, Discord, browsers) can select. A homegrown recreation of the core of
-Rogue Amoeba's Loopback, scoped to this one job.
+app (Zoom, Meet, Discord, browsers) can select.
 
-Three parts:
+Two parts:
 
 - **driver/**. A CoreAudio HAL `AudioServerPlugIn` that registers the "OBS Mic" virtual
   device. The plumbing is [BlackHole](https://github.com/ExistentialAudio/BlackHole)'s
   GPL-3 driver, vendored unmodified at commit
   [`ffcb744`](https://github.com/ExistentialAudio/BlackHole/commit/ffcb744) and configured
-  at compile time with our own device name, UID, and bundle ID.
-- **router/**. `obsmic-router`, an Objective-C daemon that recreates what Loopback's
-  engine does on modern macOS: it creates a process tap on OBS
-  (`AudioHardwareCreateProcessTap`, macOS 14.2+), wraps the tap and the virtual device in
-  a private aggregate device with the virtual device as clock master and drift
-  compensation enabled on the tap, and copies tap input to the virtual device's output in
-  the IO callback. CoreAudio handles all resampling and clock skew.
+  at compile time with our own device name, UID, and bundle ID, and with its volume
+  control disabled.
 - **meter/**. "OBS Mic Meter", a menu bar app installed to `/Applications`. Its icon is a
-  live level bar for the virtual device. The popover has the output gain slider, a
-  "Hear OBS Mic on my speakers" toggle that plays exactly what other apps receive from the
-  virtual mic on your current default output, and health checks for each link in the
-  chain (driver, router, OBS, mic permission). `install.sh` copies it in and launches it.
+  live level bar for the virtual device. The popover has a "Hear OBS Mic on my speakers"
+  toggle that plays exactly what other apps receive from the virtual mic on your current
+  default output, and health checks for each link in the chain (driver, OBS monitoring
+  device, OBS running, mic permission). `install.sh` copies it in and launches it.
+
+OBS writes its monitor output straight into the device. That is deliberate. OBS's own
+desktop audio capture (the macOS Screen Capture source) records the output of every
+process except OBS itself, so any separate process writing the mic into the device would
+put a second copy of your voice into every recording. An earlier version of this tool
+routed through a process tap and did exactly that.
 
 Why this beats a bare BlackHole setup: no Audio MIDI Setup, no multi-output device to
-silently break after macOS updates, no manual drift-correction checkbox, and no second
-virtual device to park OBS's monitor on. The tap is created muted, so OBS can monitor to
-your normal output device and you never hear your own mic. If you do hear it, the router is
-not attached, which is the only time OBS's monitor reaches the speakers.
+silently break after macOS updates, no manual drift-correction checkbox, and no hidden
+attenuation. BlackHole maps the macOS input level slider onto a 64 dB range, so a slider
+at 69% silently costs 20 dB, and apps with automatic level control keep dragging it down.
+This driver is built without that control: the slider macOS still shows for "OBS Mic" does
+nothing, and what comes out is exactly what OBS put in. Set your level in OBS.
 
 Requires macOS 14.2 or newer.
-
-The virtual device applies no volume of its own. BlackHole maps the macOS input level
-slider onto a 64 dB range, so a slider at 69% silently costs 20 dB, and apps with automatic
-level control keep dragging it down. The driver is therefore built with its volume control
-disabled: the slider macOS still shows for "OBS Mic" does nothing. The one gain stage in
-the tunnel is the **Output gain** slider in the meter popover (0 to 400%), which the router
-applies in its IO callback. It is stored in the `dev.lucasbarake.obsmic` preference domain
-and picked up by the router immediately.
 
 ## Install
 
@@ -46,24 +39,26 @@ and picked up by the router immediately.
 ./install.sh   # needs admin, restarts coreaudiod (1s audio blip)
 ```
 
-Then, once:
+Then, once, in OBS:
 
-1. In OBS: Edit → Advanced Audio Properties → set the sources you want on the virtual
-   mic to **Monitor and Output**. Leave Settings → Audio → Monitoring Device on Default.
-2. Launch OBS. Approve the one-time "record system audio" permission prompt for
-   `obsmic-router`.
-3. Approve the microphone prompt for "OBS Mic Meter" if you want the menu bar level to
-   move. Denying it only blanks the meter, the virtual mic still works.
-4. Select **OBS Mic** as the microphone anywhere.
+1. Settings → Audio → Advanced → Monitoring Device: **OBS Mic**.
+2. Edit → Advanced Audio Properties → set the sources you want on the virtual mic to
+   **Monitor and Output**.
+3. Select **OBS Mic** as the microphone anywhere.
 
-The router runs as a LaunchAgent (`dev.lucasbarake.obsmic.router`), starts at login,
-waits for OBS, and rebuilds the route automatically when OBS restarts or coreaudiod is
-reset. Log: `~/Library/Logs/obsmic-router.log`.
+You will not hear your own mic: the monitor goes into the virtual device, not your
+speakers. Use the meter's "Hear OBS Mic on my speakers" toggle to check it. While that
+toggle is on, the meter is an extra process playing your mic, and OBS's desktop audio
+capture will pick it up, so turn it off before recording.
+
+Approve the microphone prompt for "OBS Mic Meter" if you want the menu bar level to move.
+Denying it only blanks the meter, the virtual mic still works.
 
 ## Latency
 
-The tunnel itself (tap, aggregate, driver, consumer) measured 65 ms, stable, with a click
-train through QuickTime. Anything beyond that comes from OBS. Two things to check there:
+OBS writes into the device and consumers read from it; there is no tap or aggregate in
+between. (The earlier tap route measured 65 ms on its own.) What you perceive is mostly
+OBS:
 
 - OBS grows its internal audio buffer whenever a source delivers late (a sleep/wake, a USB
   hiccup), never shrinks it, and caps at 1000 ms. The log line is `adding N milliseconds of
@@ -72,26 +67,14 @@ train through QuickTime. Anything beyond that comes from OBS. Two things to chec
   stops the growth; OBS then logs `Enabling fixed audio buffering`.
 - Filters such as noise suppression add their own processing delay.
 
-## Testing the tunnel without OBS
-
-`obsmic-router` takes an optional bundle identifier and routes that app instead of OBS.
-Stop the agent, play anything in QuickTime, and run the router against it. The menu bar
-meter should light up.
-
-```
-launchctl bootout gui/$(id -u)/dev.lucasbarake.obsmic.router
-./build/obsmic-router com.apple.QuickTimePlayerX
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.lucasbarake.obsmic.router.plist
-```
-
 ## Tests
 
 ```
 ./tests/run.sh
 ```
 
-Compiles the router source into a harness and checks the notification handlers and the
-coreaudiod restart recovery against the real `gState`.
+Compiles the meter source into a harness and checks the loopback against the real
+CoreAudio device.
 
 ## Uninstall
 

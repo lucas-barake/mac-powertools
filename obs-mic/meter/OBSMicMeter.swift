@@ -1,6 +1,6 @@
 // OBS Mic Meter: menu bar level meter for the "OBS Mic" virtual device.
-// The popover also health-checks each link in the chain (driver, router, OBS,
-// mic permission), so a dead tunnel is diagnosable at a glance.
+// The popover also health-checks each link in the chain (driver, OBS monitor
+// setting, OBS running, mic permission), so a silent mic is diagnosable at a glance.
 
 import AppKit
 import AVFoundation
@@ -10,26 +10,31 @@ import os
 let kVirtualDeviceUID = "OBSMic_UID" as CFString
 let kOBSBundleID = "com.obsproject.obs-studio"
 
-// Shared with obsmic-router, which applies the gain in its IO callback.
-let kPrefsDomain = "dev.lucasbarake.obsmic" as CFString
-let kOutputGainKey = "OutputGain" as CFString
-let kSettingsChangedNotification = Notification.Name("dev.lucasbarake.obsmic.settingsChanged")
-let kMaxOutputGain: Float = 4.0
+// OBS writes its monitor output straight into the virtual device. Anything
+// else writing into it would be a separate process, and OBS's desktop audio
+// capture would record it as a second copy of the mic.
+enum OBSConfig {
+    static let root = NSHomeDirectory() + "/Library/Application Support/obs-studio"
 
-enum RouterSettings {
-    static func outputGain() -> Float {
-        CFPreferencesAppSynchronize(kPrefsDomain)
-        let value = CFPreferencesCopyAppValue(kOutputGainKey, kPrefsDomain)
-        guard let number = value as? NSNumber else { return 1.0 }
-        let gain = number.floatValue
-        return (gain >= 0 && gain <= kMaxOutputGain) ? gain : 1.0
+    static func iniValue(_ path: String, section: String, key: String) -> String? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        var inSection = false
+        for line in text.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("[") { inSection = (t == "[\(section)]"); continue }
+            if inSection, let eq = t.firstIndex(of: "="), t[..<eq] == key {
+                return String(t[t.index(after: eq)...])
+            }
+        }
+        return nil
     }
 
-    static func setOutputGain(_ gain: Float) {
-        CFPreferencesSetAppValue(kOutputGainKey, NSNumber(value: gain), kPrefsDomain)
-        CFPreferencesAppSynchronize(kPrefsDomain)
-        DistributedNotificationCenter.default().postNotificationName(
-            kSettingsChangedNotification, object: nil, userInfo: nil, deliverImmediately: true)
+    // The monitoring device lives in the active profile's basic.ini.
+    static func monitoringDeviceID() -> String? {
+        guard let profileDir = iniValue(root + "/user.ini", section: "Basic", key: "ProfileDir")
+        else { return nil }
+        return iniValue(root + "/basic/profiles/\(profileDir)/basic.ini",
+                        section: "Audio", key: "MonitoringDeviceId")
     }
 }
 
@@ -194,7 +199,7 @@ func activeSubDevices(_ aggregate: AudioObjectID) -> [AudioObjectID] {
 // Plays what the OBS Mic device delivers to its consumers on the current default
 // output device: one private aggregate with the output device as clock master and
 // the virtual device drift-compensated against it, and a copy in the IO callback.
-// Hearing this is the only honest way to check the tunnel, gain included.
+// Hearing this is the only honest way to check what the virtual mic delivers.
 final class Loopback {
     private(set) var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
@@ -367,31 +372,15 @@ final class PopoverViewController: NSViewController {
     let meterView = MeterView()
     let dbLabel = NSTextField(labelWithString: "-60 dB")
     let driverRow = StatusRow(title: "Driver")
-    let routerRow = StatusRow(title: "Router")
+    let monitorRow = StatusRow(title: "OBS monitor")
     let obsRow = StatusRow(title: "OBS")
     let micRow = StatusRow(title: "Mic access")
-    let hearButton = NSButton(checkboxWithTitle: "Hear OBS Mic on my speakers", target: nil, action: #selector(hearToggled(_:)))
+    let hearButton = NSButton(checkboxWithTitle: "Hear OBS Mic on my speakers (OBS desktop audio hears it too)", target: nil, action: #selector(hearToggled(_:)))
     let hearStatus = NSTextField(labelWithString: "")
     var onHearToggled: ((Bool) -> Void)?
 
     @objc func hearToggled(_ sender: NSButton) {
         onHearToggled?(sender.state == .on)
-    }
-
-    let gainLabel = NSTextField(labelWithString: "Output gain: 100%")
-    let gainSlider = NSSlider(value: 1.0, minValue: 0.0, maxValue: Double(kMaxOutputGain),
-                              target: nil, action: #selector(gainChanged(_:)))
-
-    @objc func gainChanged(_ sender: NSSlider) {
-        // Snap near 100% so unity is easy to hit by hand.
-        var gain = Float(sender.doubleValue)
-        if abs(gain - 1.0) < 0.05 { gain = 1.0; sender.doubleValue = 1.0 }
-        RouterSettings.setOutputGain(gain)
-        showGain(gain)
-    }
-
-    func showGain(_ gain: Float) {
-        gainLabel.stringValue = String(format: "Output gain: %.0f%%", gain * 100)
     }
 
     override func loadView() {
@@ -411,26 +400,12 @@ final class PopoverViewController: NSViewController {
         dbLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         dbLabel.textColor = .secondaryLabelColor
 
-        gainLabel.font = .systemFont(ofSize: 12)
-        gainSlider.target = self
-        gainSlider.translatesAutoresizingMaskIntoConstraints = false
-        gainSlider.widthAnchor.constraint(equalToConstant: 240).isActive = true
-        gainSlider.numberOfTickMarks = 9
-        let initialGain = RouterSettings.outputGain()
-        gainSlider.doubleValue = Double(initialGain)
-        showGain(initialGain)
-
-        hearButton.target = self
-        hearButton.font = .systemFont(ofSize: 12)
-        hearStatus.font = .systemFont(ofSize: 11)
-        hearStatus.textColor = .secondaryLabelColor
-
         let quit = NSButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
         quit.bezelStyle = .rounded
         quit.controlSize = .small
 
-        for v in [title, meterView, dbLabel, gainLabel, gainSlider, hearButton, hearStatus,
-                  driverRow, routerRow, obsRow, micRow, quit] {
+        for v in [title, meterView, dbLabel, hearButton, hearStatus,
+                  driverRow, monitorRow, obsRow, micRow, quit] {
             stack.addArrangedSubview(v)
         }
         view = stack
@@ -444,7 +419,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let popover = NSPopover()
     let popoverVC = PopoverViewController()
     var timer: Timer?
-    var routerRunning = false
     var healthTick = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -467,7 +441,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         capture.ensureCapturing()
-        checkRouter()
 
         let tickTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.tick()
@@ -495,7 +468,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         healthTick += 1
         if healthTick % 20 == 0 {
             capture.ensureCapturing()
-            checkRouter()
             if popoverVC.hearButton.state == .on {
                 let wanted = capture.isCapturing && loopback.isRunning
                     && loopback.outputDevice == defaultOutputDevice()
@@ -524,10 +496,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ok: capture.isCapturing,
                 text: capture.isCapturing ? "Driver: OBS Mic device active"
                                           : "Driver: OBS Mic device not found")
-            popoverVC.routerRow.set(
-                ok: routerRunning,
-                text: routerRunning ? "Router: obsmic-router running"
-                                    : "Router: obsmic-router not running")
+            let monitorOK = OBSConfig.monitoringDeviceID() == (kVirtualDeviceUID as String)
+            popoverVC.monitorRow.set(
+                ok: monitorOK,
+                text: monitorOK ? "OBS monitor: OBS Mic"
+                                : "OBS monitor: not OBS Mic (Settings, Audio, Monitoring Device)")
             let obsRunning = !NSRunningApplication
                 .runningApplications(withBundleIdentifier: kOBSBundleID).isEmpty
             popoverVC.obsRow.set(
@@ -538,23 +511,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ok: micOK,
                 text: micOK ? "Mic access: granted"
                             : "Mic access: denied, meter reads silence")
-        }
-    }
-
-    func checkRouter() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        task.arguments = ["-x", "obsmic-router"]
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        task.terminationHandler = { [weak self] p in
-            DispatchQueue.main.async { self?.routerRunning = p.terminationStatus == 0 }
-        }
-        do {
-            try task.run()
-        } catch {
-            NSLog("OBS Mic Meter: could not launch pgrep: %@", "\(error)")
-            routerRunning = false
         }
     }
 

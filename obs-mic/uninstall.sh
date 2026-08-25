@@ -9,6 +9,7 @@ rm -rf "/Applications/OBS Mic Meter.app"
 
 echo "Removing driver and router (admin required)..."
 sudo rm -f /usr/local/bin/obsmic-router
+rm -rf ~/Library/Logs/obsmic-router.log
 sudo rm -rf /Library/Audio/Plug-Ins/HAL/OBSMic.driver
 sudo killall coreaudiod
 
