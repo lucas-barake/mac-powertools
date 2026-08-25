@@ -15,3 +15,8 @@ swiftc -target "$(uname -m)-apple-macos14.2" \
     -framework AppKit -framework AVFoundation -framework CoreAudio \
     -o "$OUT/meter-loopback" "$OUT/OBSMicMeter.swift" meter-loopback.swift
 "$OUT/meter-loopback"
+
+swiftc -target "$(uname -m)-apple-macos14.2" \
+    -framework AppKit -framework AVFoundation -framework CoreAudio \
+    -o "$OUT/popover-hear" "$OUT/OBSMicMeter.swift" popover-hear.swift
+"$OUT/popover-hear"

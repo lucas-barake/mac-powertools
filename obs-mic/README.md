@@ -73,8 +73,9 @@ OBS:
 ./tests/run.sh
 ```
 
-Compiles the meter source into a harness and checks the loopback against the real
-CoreAudio device.
+Compiles the meter source into harnesses: one checks the loopback against the real
+CoreAudio device, one clicks the popover's Hear checkbox and checks that the loopback
+starts and stops with it.
 
 ## Uninstall
 

@@ -400,6 +400,11 @@ final class PopoverViewController: NSViewController {
         dbLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         dbLabel.textColor = .secondaryLabelColor
 
+        hearButton.target = self
+        hearButton.font = .systemFont(ofSize: 12)
+        hearStatus.font = .systemFont(ofSize: 11)
+        hearStatus.textColor = .secondaryLabelColor
+
         let quit = NSButton(title: "Quit", target: NSApp, action: #selector(NSApplication.terminate(_:)))
         quit.bezelStyle = .rounded
         quit.controlSize = .small
